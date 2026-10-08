@@ -42,6 +42,20 @@ print("ANDROIDWORLD_APP_SETUP_PASSED")
 PY
 grep -q ANDROIDWORLD_APP_SETUP_PASSED "$RESULT_DIR/setup.log"
 
+# Validate prerequisite app installation before any paid inference.
+if [[ "$TASK_NAME" == Markor* ]]; then
+  adb shell pm path net.gsantner.markor | tee "$RESULT_DIR/markor-package.txt"
+  grep -q '^package:' "$RESULT_DIR/markor-package.txt" || {
+    echo "PREREQUISITE_FAILED: Markor is not installed"; exit 1;
+  }
+  python - <<'PY'
+from phone_agent.config.apps import APP_PACKAGES
+import zai_androidworld_agent
+assert APP_PACKAGES.get("Markor") == "net.gsantner.markor"
+print("MARKOR_LAUNCH_MAPPING_OK")
+PY
+fi
+
 STOPFILE="$RECORD_DIR/.stop"
 RECORD_PID=""
 record_loop() {
