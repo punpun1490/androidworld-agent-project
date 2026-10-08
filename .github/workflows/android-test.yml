@@ -1,7 +1,6 @@
 name: AndroidWorld Benchmark Test
 
 on:
-  push:
   workflow_dispatch:
 
 jobs:
