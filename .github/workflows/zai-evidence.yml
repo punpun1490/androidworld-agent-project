@@ -12,6 +12,14 @@ on:
           - SystemWifiTurnOn
           - MarkorCreateNote
           - MarkorCreateNoteAndSms
+      prompt_variant:
+        description: "Agent strategy: existing vs onboarding-aware"
+        required: true
+        default: tutorial_aware
+        type: choice
+        options:
+          - tutorial_aware
+          - baseline
       suite_seed:
         description: "Independent task-instance seed"
         required: true
@@ -36,6 +44,7 @@ jobs:
       PHONE_AGENT_MODEL: autoglm-phone-multilingual
       PHONE_AGENT_DEVICE_ID: emulator-5554
       PHONE_AGENT_LANG: en
+      PHONE_AGENT_PROMPT_VARIANT: ${{ inputs.prompt_variant }}
       TASK_NAME: ${{ inputs.task }}
       SUITE_SEED: ${{ inputs.suite_seed }}
     steps:
@@ -77,6 +86,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zai-${{ inputs.task }}-seed-${{ inputs.suite_seed }}-${{ github.run_id }}
+          name: zai-${{ inputs.task }}-${{ inputs.prompt_variant }}-seed-${{ inputs.suite_seed }}-${{ github.run_id }}
           path: results/
           if-no-files-found: warn
