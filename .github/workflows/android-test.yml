@@ -1,18 +1,36 @@
 
-name: Android Emulator Test
+name: AndroidWorld Benchmark Test
 
 on:
   push:
   workflow_dispatch:
 
 jobs:
-  emulator-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  androidworld-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install AndroidWorld
+        run: |
+          git clone --depth 1 https://github.com/google-research/android_world.git
+          cd android_world
+          python -m pip install -r requirements.txt
+          python -m pip install --no-deps -e .
+          python -c "import android_world; print('ANDROIDWORLD IMPORT OK')"
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
       - name: Enable KVM
         run: |
@@ -20,7 +38,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Start Android emulator
+      - name: Run AndroidWorld task
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
           api-level: 33
@@ -30,16 +48,39 @@ jobs:
           avd-name: AndroidWorldAvd
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -grpc 8554
           script: |
-            adb devices
-            adb shell getprop sys.boot_completed
-            adb exec-out screencap -p > emulator.png
-            test -s emulator.png
-            echo "ANDROID EMULATOR TEST PASSED"
+            mkdir -p "$HOME/Android/Sdk/platform-tools"
+            ln -sf "$(command -v adb)" "$HOME/Android/Sdk/platform-tools/adb"
 
-      - name: Save screenshot
+            mkdir -p "$GITHUB_WORKSPACE/results"
+            cd "$GITHUB_WORKSPACE/android_world"
+
+            if python run.py \
+              --suite_family=android_world \
+              --agent_name=random_agent \
+              --tasks=SystemWifiTurnOn \
+              --perform_emulator_setup \
+              --adb_path="$(command -v adb)" \
+              --output_path="$GITHUB_WORKSPACE/results" \
+              > "$GITHUB_WORKSPACE/results/benchmark.log" 2>&1; then
+              cat "$GITHUB_WORKSPACE/results/benchmark.log"
+            else
+              cat "$GITHUB_WORKSPACE/results/benchmark.log"
+              exit 1
+            fi
+
+            grep -q "Running task" "$GITHUB_WORKSPACE/results/benchmark.log"
+            grep -E 'Task (Successful|Failed)' "$GITHUB_WORKSPACE/results/benchmark.log"
+            if grep -q "SKIPPING" "$GITHUB_WORKSPACE/results/benchmark.log"; then
+              echo "AndroidWorld task encountered an exception"
+              exit 1
+            fi
+
+            echo "ANDROIDWORLD SMOKE TEST PASSED"
+
+      - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: emulator-screenshot
-          path: emulator.png
-          if-no-files-found: ignore
+          name: androidworld-smoke-results
+          path: results/
+          if-no-files-found: warn
