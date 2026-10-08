@@ -51,7 +51,9 @@ jobs:
           python -m pip install -r android_world/requirements.txt
           python -m pip install --no-deps -e android_world
           python -m pip install -r Open-AutoGLM/requirements.txt
-          PYTHONPATH="$GITHUB_WORKSPACE/Open-AutoGLM:$GITHUB_WORKSPACE/android_world:$GITHUB_WORKSPACE" python -c "import run_zai_autoglm; print('ZAI AGENT IMPORT PASSED')"
+          # Do not import run.py yet: it resolves the adb path at import time.
+          # The full launcher is imported later, once emulator-runner has installed adb.
+          PYTHONPATH="$GITHUB_WORKSPACE/Open-AutoGLM:$GITHUB_WORKSPACE/android_world:$GITHUB_WORKSPACE" python -c "import zai_androidworld_agent; print('ZAI AGENT ADAPTER IMPORT PASSED')"
 
       - name: Enable KVM
         run: |
