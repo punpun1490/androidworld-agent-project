@@ -12,6 +12,7 @@ from phone_agent import PhoneAgent
 from phone_agent.agent import AgentConfig
 from phone_agent.model import ModelConfig
 from phone_agent.config.apps import APP_PACKAGES
+from phone_agent.config import get_system_prompt
 
 # AndroidWorld includes Markor, but upstream Open-AutoGLM's Launch app
 # whitelist does not recognize its display name. This local mapping enables
@@ -43,10 +44,30 @@ class ZaiAndroidWorldAgent(base_agent.EnvironmentInteractingAgent):
             lang=lang,
             temperature=0.0,
         )
+        # The baseline tapped non-interactive icons in a tutorial illustration.
+        # Extend the upstream prompt instead of changing its action schema.
+        system_prompt = get_system_prompt(lang)
+        if os.environ.get("PHONE_AGENT_PROMPT_VARIANT") == "tutorial_aware":
+            system_prompt += """
+# Visual grounding: onboarding walkthroughs
+Some apps initially display onboarding, help slides or tutorials.
+Instructional slides may contain illustrative mini-screenshots with
+fake icons and buttons that cannot be clicked. Distinguish the outer
+tutorial controls from the picture within the tutorial.
+Clues include a large heading like "Main View" or "View", text
+explaining the app, page-indicator dots, and a small next arrow at
+the bottom right of the real screen. Advance such tutorials using
+the real outer next arrow until the live app appears.
+Never tap a + icon inside an illustrative screenshot.
+If two consecutive taps change nothing, reassess the screen
+instead of repeatedly tapping the same place.
+After dismissing onboarding, complete the user's requested task.
+"""
         agent_cfg = AgentConfig(
             device_id=os.environ.get("PHONE_AGENT_DEVICE_ID", "emulator-5554"),
             lang=lang,
             max_steps=100,
+            system_prompt=system_prompt,
             verbose=True,
         )
         self.phone = PhoneAgent(
