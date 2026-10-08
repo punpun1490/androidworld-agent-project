@@ -1,0 +1,156 @@
+name: AndroidWorld Evidence Pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: AndroidWorld task to evaluate
+        required: true
+        default: MarkorCreateNote
+        type: choice
+        options:
+          - SystemWifiTurnOn
+          - MarkorCreateNote
+          - MarkorCreateNoteAndSms
+      suite_seed:
+        description: Task seed (change for independent evaluations)
+        required: true
+        default: "101"
+        type: string
+      model:
+        description: Gemini model ID (baseline should remain fixed)
+        required: true
+        default: gemini-3.5-flash-lite
+        type: string
+
+jobs:
+  pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ inputs.model }}
+      TASK_NAME: ${{ inputs.task }}
+      SUITE_SEED: ${{ inputs.suite_seed }}
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install AndroidWorld and agent
+        run: |
+          test -n "$GEMINI_API_KEY" || { echo "Missing GEMINI_API_KEY"; exit 1; }
+          git clone --depth 1 https://github.com/google-research/android_world.git
+          python -m pip install -r android_world/requirements.txt
+          python -m pip install --no-deps -e android_world
+          python -m pip install google-genai pillow
+
+      - name: Enable KVM and recording prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Prepare agent and screen recording
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/results/recordings"
+          cat > "$GITHUB_WORKSPACE/start-evaluation.sh" <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          ADB_BIN="$(command -v adb)"
+          mkdir -p "$HOME/Android/Sdk/platform-tools"
+          if [[ "$ADB_BIN" != "$HOME/Android/Sdk/platform-tools/adb" ]]; then
+            ln -sfn "$ADB_BIN" "$HOME/Android/Sdk/platform-tools/adb"
+          fi
+          adb devices
+          export PYTHONPATH="$GITHUB_WORKSPACE/android_world:$GITHUB_WORKSPACE:${PYTHONPATH:-}"
+          RESULT_DIR="$GITHUB_WORKSPACE/results"
+          RECORD_DIR="$RESULT_DIR/recordings"
+          echo "task=$TASK_NAME, seed=$SUITE_SEED, model=$GEMINI_MODEL" | tee "$RESULT_DIR/experiment.txt"
+          echo "$GITHUB_SHA" >> "$RESULT_DIR/experiment.txt"
+
+          # Capture screen as genuine Android MP4 clips. Each segment is
+          # limited to 150s to respect Android's 180s screenrecord limit.
+          record_loop() {
+            local segment=0 remote dest
+            while true; do
+              segment=$((segment + 1))
+              remote="/sdcard/aw_record_${segment}.mp4"
+              dest="$RECORD_DIR/segment_${segment}.mp4"
+              adb shell screenrecord --time-limit 150 --bit-rate 1200000 "$remote" || true
+              adb pull "$remote" "$dest" >/dev/null 2>&1 || true
+              adb shell rm -f "$remote" || true
+              [[ -f "$RECORD_DIR/STOP" ]] && break
+            done
+          }
+
+          record_loop &
+          RECORDER_PID=$!
+          cleanup() {
+            touch "$RECORD_DIR/STOP"
+            # Ask the on-device recorder to finalize its current MP4.
+            adb shell 'pkill -2 -f "^screenrecord" || true' >/dev/null 2>&1 || true
+            for i in $(seq 1 15); do
+              if ! kill -0 "$RECORDER_PID" 2>/dev/null; then break; fi
+              sleep 1
+            done
+            kill "$RECORDER_PID" 2>/dev/null || true
+            wait "$RECORDER_PID" 2>/dev/null || true
+            adb shell ls /sdcard/aw_record_\*.mp4 >/dev/null 2>&1 && {
+              for remote in $(adb shell ls /sdcard/aw_record_\*.mp4 2>/dev/null | tr -d '\r'); do
+                adb pull "$remote" "$RECORD_DIR/" >/dev/null 2>&1 || true
+              done
+            } || true
+          }
+          trap cleanup EXIT
+
+          cd "$GITHUB_WORKSPACE/android_world"
+          python -u "$GITHUB_WORKSPACE/run_ai_studio.py" \
+            --suite_family=android_world \
+            --agent_name=m3a_ai_studio \
+            --tasks="$TASK_NAME" \
+            --n_task_combinations=1 \
+            --task_random_seed="$SUITE_SEED" \
+            --perform_emulator_setup \
+            --adb_path="$ADB_BIN" \
+            --output_path="$RESULT_DIR" \
+            2>&1 | tee "$RESULT_DIR/benchmark.log"
+
+          python "$GITHUB_WORKSPACE/export_results.py" \
+            --results="$RESULT_DIR" \
+            --model="$GEMINI_MODEL" \
+            --suite-seed="$SUITE_SEED" \
+            --recording="recordings/segment_*.mp4"
+
+          grep -q "Running task" "$RESULT_DIR/benchmark.log"
+          grep -Eq "Task (Successful|Failed)" "$RESULT_DIR/benchmark.log"
+          if grep -q "SKIPPING" "$RESULT_DIR/benchmark.log"; then
+            echo "ERROR: Benchmark skipped the task"
+            exit 1
+          fi
+          echo "EVALUATION COMPLETED (success/failure in runs.csv)"
+          BASH
+          chmod +x "$GITHUB_WORKSPACE/start-evaluation.sh"
+
+      - name: Evaluate on Android emulator
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          avd-name: AndroidWorldAvd
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -grpc 8554
+          script: bash "$GITHUB_WORKSPACE/start-evaluation.sh"
+
+      - name: Upload evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-${{ inputs.task }}-${{ inputs.suite_seed }}
+          path: results/
+          if-no-files-found: warn
