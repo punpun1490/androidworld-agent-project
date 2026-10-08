@@ -1,0 +1,79 @@
+name: ZAI AutoGLM AndroidWorld Pilot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  zai-pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PHONE_AGENT_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      PHONE_AGENT_BASE_URL: https://api.z.ai/api/paas/v4
+      PHONE_AGENT_MODEL: autoglm-phone-multilingual
+      PHONE_AGENT_DEVICE_ID: emulator-5554
+      PHONE_AGENT_LANG: en
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Check ZAI API without emulator
+        run: |
+          test -n "$PHONE_AGENT_API_KEY"
+          python -m pip install --quiet "openai>=2.9.0"
+          python - <<'PY'
+          import os
+          from openai import OpenAI
+          client = OpenAI(
+              api_key=os.environ["PHONE_AGENT_API_KEY"],
+              base_url=os.environ["PHONE_AGENT_BASE_URL"],
+              timeout=40,
+              max_retries=0,
+          )
+          result = client.chat.completions.create(
+              model=os.environ["PHONE_AGENT_MODEL"],
+              messages=[{"role":"user","content":"Hi"}],
+              max_tokens=64,
+              temperature=0,
+              stream=False,
+          )
+          assert result.choices
+          print("ZAI API ACCESS PASSED")
+          PY
+
+      - name: Install AndroidWorld and AutoGLM
+        run: |
+          git clone --depth 1 https://github.com/google-research/android_world.git
+          git clone --depth 1 https://github.com/zai-org/Open-AutoGLM.git
+          python -m pip install -r android_world/requirements.txt
+          python -m pip install --no-deps -e android_world
+          python -m pip install -r Open-AutoGLM/requirements.txt
+          PYTHONPATH="$GITHUB_WORKSPACE/Open-AutoGLM:$GITHUB_WORKSPACE/android_world:$GITHUB_WORKSPACE" python -c "import run_zai_autoglm; print('ZAI AGENT IMPORT PASSED')"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run AutoGLM on AndroidWorld
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          avd-name: AndroidWorldAvd
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -grpc 8554
+          script: bash "$GITHUB_WORKSPACE/start-zai.sh"
+
+      - name: Upload logs and trajectories
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zai-autoglm-androidworld-pilot
+          path: results/
+          if-no-files-found: warn
