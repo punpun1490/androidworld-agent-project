@@ -1,0 +1,82 @@
+name: ZAI AndroidWorld Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "AndroidWorld benchmark task"
+        required: true
+        default: MarkorCreateNote
+        type: choice
+        options:
+          - SystemWifiTurnOn
+          - MarkorCreateNote
+          - MarkorCreateNoteAndSms
+      suite_seed:
+        description: "Independent task-instance seed"
+        required: true
+        default: "101"
+        type: choice
+        options:
+          - "101"
+          - "102"
+          - "103"
+
+concurrency:
+  group: zai-evidence-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PHONE_AGENT_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      PHONE_AGENT_BASE_URL: https://api.z.ai/api/paas/v4
+      PHONE_AGENT_MODEL: autoglm-phone-multilingual
+      PHONE_AGENT_DEVICE_ID: emulator-5554
+      PHONE_AGENT_LANG: en
+      TASK_NAME: ${{ inputs.task }}
+      SUITE_SEED: ${{ inputs.suite_seed }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install benchmark dependencies
+        run: |
+          test -n "$PHONE_AGENT_API_KEY" || { echo "Missing ZAI_API_KEY secret"; exit 1; }
+          git clone --depth 1 https://github.com/google-research/android_world.git
+          git clone --depth 1 https://github.com/zai-org/Open-AutoGLM.git
+          python -m pip install -r android_world/requirements.txt
+          python -m pip install --no-deps -e android_world
+          python -m pip install -r Open-AutoGLM/requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          mkdir -p results/recordings
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Evaluate and capture Android video
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          avd-name: AndroidWorldAvd
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -grpc 8554
+          script: bash "$GITHUB_WORKSPACE/start-zai-evidence.sh"
+
+      - name: Upload evidence even on task failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zai-${{ inputs.task }}-seed-${{ inputs.suite_seed }}-${{ github.run_id }}
+          path: results/
+          if-no-files-found: warn
