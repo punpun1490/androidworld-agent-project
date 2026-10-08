@@ -11,6 +11,12 @@ from android_world.agents import base_agent
 from phone_agent import PhoneAgent
 from phone_agent.agent import AgentConfig
 from phone_agent.model import ModelConfig
+from phone_agent.config.apps import APP_PACKAGES
+
+# AndroidWorld includes Markor, but upstream Open-AutoGLM's Launch app
+# whitelist does not recognize its display name. This local mapping enables
+# the normal AutoGLM Launch tool without changing its prompt or action policy.
+APP_PACKAGES["Markor"] = "net.gsantner.markor"
 
 
 def _refuse_takeover(message):
