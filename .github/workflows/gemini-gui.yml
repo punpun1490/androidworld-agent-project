@@ -1,0 +1,116 @@
+name: Gemini AndroidWorld GUI Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Gemini model ID in Google AI Studio
+        required: true
+        default: gemini-2.5-flash-lite
+        type: string
+
+jobs:
+  gemini-gui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ inputs.model }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Python 3.11
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Validate secret and image API before emulator
+        run: |
+          python -m pip install --quiet google-genai pillow
+          python - <<'PY'
+          import os
+          from PIL import Image
+          from google import genai
+          from google.genai import types
+          assert os.environ.get("GEMINI_API_KEY"), "GEMINI_API_KEY secret missing"
+          client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+          model = os.environ["GEMINI_MODEL"]
+          im = Image.new("RGB", (48, 48), (200, 50, 50))
+          response = client.models.generate_content(
+              model=model,
+              contents=["Say just RED if the image is red.", im],
+              config=types.GenerateContentConfig(temperature=0, max_output_tokens=120),
+          )
+          assert response.text and response.text.strip(), "Gemini gave empty image response"
+          print("GEMINI MULTIMODAL API OK; model:", model)
+          print("Response:", response.text.strip()[:160])
+          PY
+
+      - name: Install AndroidWorld and agent
+        run: |
+          git clone --depth 1 https://github.com/google-research/android_world.git
+          python -m pip install -r android_world/requirements.txt
+          python -m pip install --no-deps -e android_world
+          python -m pip install google-genai pillow
+          python -c "import android_world; from ai_studio_agent import GeminiStudioWrapper; print('AGENT IMPORT OK')"
+
+      - name: Install FFmpeg and enable KVM
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Prepare benchmark script
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/results"
+          cat > "$GITHUB_WORKSPACE/start-gemini.sh" <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          ADB_BIN="$(command -v adb)"
+          mkdir -p "$HOME/Android/Sdk/platform-tools"
+          if [[ "$ADB_BIN" != "$HOME/Android/Sdk/platform-tools/adb" ]]; then
+            ln -sfn "$ADB_BIN" "$HOME/Android/Sdk/platform-tools/adb"
+          fi
+          adb devices
+          export PYTHONPATH="$GITHUB_WORKSPACE/android_world:$GITHUB_WORKSPACE:${PYTHONPATH:-}"
+          cd "$GITHUB_WORKSPACE/android_world"
+          python -u "$GITHUB_WORKSPACE/run_ai_studio.py" \
+            --suite_family=android_world \
+            --agent_name=m3a_ai_studio \
+            --tasks=SystemWifiTurnOn \
+            --perform_emulator_setup \
+            --adb_path="$ADB_BIN" \
+            --output_path="$GITHUB_WORKSPACE/results" \
+            2>&1 | tee "$GITHUB_WORKSPACE/results/benchmark.log"
+
+          grep -q "Running task" "$GITHUB_WORKSPACE/results/benchmark.log"
+          grep -Eq "Task (Successful|Failed)" "$GITHUB_WORKSPACE/results/benchmark.log"
+          if grep -q "SKIPPING" "$GITHUB_WORKSPACE/results/benchmark.log"; then
+            echo "ERROR: Task skipped. Inspect benchmark.log"
+            exit 1
+          fi
+          echo "GEMINI ANDROIDWORLD AGENT EXECUTED"
+          BASH
+          chmod +x "$GITHUB_WORKSPACE/start-gemini.sh"
+
+      - name: Run AndroidWorld with Gemini
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          avd-name: AndroidWorldAvd
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -grpc 8554
+          script: bash "$GITHUB_WORKSPACE/start-gemini.sh"
+
+      - name: Upload benchmark output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-androidworld-first-run
+          path: results/
+          if-no-files-found: warn
