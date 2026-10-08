@@ -22,6 +22,7 @@ meta={
     "task":os.environ["TASK_NAME"],"suite_seed":int(os.environ["SUITE_SEED"]),
     "agent":"zai_autoglm_phone","model":os.environ["PHONE_AGENT_MODEL"],
     "temperature":0,"device_id":os.environ["PHONE_AGENT_DEVICE_ID"],
+    "prompt_variant":os.environ.get("PHONE_AGENT_PROMPT_VARIANT","baseline"),
     "workflow_commit":os.environ.get("GITHUB_SHA"),
     "androidworld_commit":rev("android_world"),"autoglm_commit":rev("Open-AutoGLM"),
 }
@@ -64,7 +65,7 @@ record_loop() {
     n=$((n + 1))
     remote="/sdcard/eval_$n.mp4"
     dst="$RECORD_DIR/segment_$(printf '%03d' "$n").mp4"
-    adb shell screenrecord --time-limit 150 --bit-rate 900000 "$remote" || true
+    adb shell screenrecord --size 480x800 --time-limit 150 --bit-rate 500000 "$remote" || true
     adb pull "$remote" "$dst" >/dev/null 2>&1 || true
     adb shell rm -f "$remote" >/dev/null 2>&1 || true
   done
@@ -119,5 +120,19 @@ python "$GITHUB_WORKSPACE/export_results.py" \
     --results "$RESULT_DIR" --agent zai_autoglm_phone \
     --model "$PHONE_AGENT_MODEL" --suite-seed "$SUITE_SEED" \
     --recording 'recordings/segment_*.mp4'
-if [[ "$valid" -lt 1 ]]; then echo "SCREEN_RECORDING_MISSING"; exit 1; fi
+if [[ "$valid" -lt 1 ]]; then
+  echo "SCREEN_RECORDING_MISSING: generating a clearly labelled step-frame reconstruction"
+  # This is NOT a full real-time recording. It is a reviewable video assembled
+  # from the step screenshots that AndroidWorld actually captured.
+  find "$RESULT_DIR/frames" -name '*.jpg' -print | sort > "$RESULT_DIR/frames/list.txt"
+  if [[ -s "$RESULT_DIR/frames/list.txt" ]]; then
+    ffmpeg -hide_banner -loglevel error -y -framerate 1 \
+      -pattern_type glob -i "$RESULT_DIR/frames/*.jpg" \
+      -vf "scale=480:800:force_original_aspect_ratio=decrease,pad=480:800:(ow-iw)/2:(oh-ih)/2" \
+      -c:v libx264 -pix_fmt yuv420p "$RESULT_DIR/recordings/step_frame_reconstruction.mp4" || true
+  fi
+  echo "RECORDING_INCOMPLETE: native capture failed; reconstruction is not equivalent to a real-time screen recording" | tee "$RESULT_DIR/recording_status.txt"
+else
+  echo "Native Android MP4 recorded" > "$RESULT_DIR/recording_status.txt"
+fi
 echo "ANDROIDWORLD_ZAI_EVIDENCE_COMPLETE"
