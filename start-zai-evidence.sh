@@ -57,6 +57,24 @@ print("MARKOR_LAUNCH_MAPPING_OK")
 PY
 fi
 
+# The official AutoGLM Type tool uses the ADBKeyBoard IME and broadcasts.
+# The AndroidWorld emulator does not include that third-party keyboard.
+# Pin both its official release and SHA256 to make text entry reproducible.
+if [[ "$TASK_NAME" == Markor* ]]; then
+  APK="$RUNNER_TEMP/adbkeyboard-v2.4-dev.apk"
+  curl --fail --location --silent --show-error --retry 3 \
+    --output "$APK" \
+    https://github.com/senzhk/ADBKeyBoard/releases/download/v2.4-dev/keyboardservice-debug.apk
+  echo "e0d0cf276b710cb34c46121f58720f5285a83ed410b0d45f57a0677b67dc2852  $APK" | sha256sum --check
+  adb install -r "$APK"
+  adb shell ime enable com.android.adbkeyboard/.AdbIME
+  adb shell ime set com.android.adbkeyboard/.AdbIME
+  adb shell settings get secure default_input_method | tr -d '\r' | \
+    grep -Fx 'com.android.adbkeyboard/.AdbIME'
+  adb shell pm path com.android.adbkeyboard | grep -q '^package:'
+  echo "ADB_KEYBOARD_INSTALLED_AND_SELECTED" | tee "$RESULT_DIR/keyboard_status.txt"
+fi
+
 STOPFILE="$RECORD_DIR/.stop"
 RECORD_PID=""
 record_loop() {
