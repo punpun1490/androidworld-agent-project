@@ -31,6 +31,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--agent", default="m3a_ai_studio")
     parser.add_argument("--suite-seed", type=int, required=True)
     parser.add_argument("--recording", default="recordings/segment_*.mp4")
     args = parser.parse_args()
@@ -61,7 +62,7 @@ def main():
                     "trial_seed": trial_seed,
                     "suite_seed": args.suite_seed,
                     "model": args.model,
-                    "agent": "m3a_ai_studio",
+                    "agent": args.agent,
                     "success": int(is_successful),
                     "steps": len(step_ids),
                     "runtime_seconds": ep.get(E.RUN_TIME),
@@ -94,6 +95,7 @@ def main():
                         "task": task_name,
                         "trial_seed": trial_seed,
                         "model": args.model,
+                        "agent": args.agent,
                         "step": int(step_id) + 1,
                         "goal": ep.get(E.GOAL),
                         "reason": to_text(field("action_reason")),
