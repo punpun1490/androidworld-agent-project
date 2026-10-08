@@ -1,4 +1,3 @@
-
 name: AndroidWorld Benchmark Test
 
 on:
@@ -38,6 +37,59 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Prepare benchmark script
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/results"
+          echo "Benchmark setup started" > "$GITHUB_WORKSPACE/results/setup-status.txt"
+          cat > "$GITHUB_WORKSPACE/benchmark-smoke.sh" <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          ADB_BIN="$(command -v adb)"
+          if [[ -z "$ADB_BIN" ]]; then
+            echo "ERROR: adb not on PATH"
+            exit 1
+          fi
+          mkdir -p "$HOME/Android/Sdk/platform-tools"
+          if [[ "$ADB_BIN" != "$HOME/Android/Sdk/platform-tools/adb" ]]; then
+            ln -sfn "$ADB_BIN" "$HOME/Android/Sdk/platform-tools/adb"
+          fi
+
+          echo "Connected devices:"
+          adb devices
+          echo "Emulator boot state: $(adb shell getprop sys.boot_completed)"
+
+          cd "$GITHUB_WORKSPACE/android_world"
+          echo "Starting SystemWifiTurnOn benchmark (random agent)..."
+          if ! python -u run.py \
+            --suite_family=android_world \
+            --agent_name=random_agent \
+            --tasks=SystemWifiTurnOn \
+            --perform_emulator_setup \
+            --adb_path="$ADB_BIN" \
+            --output_path="$GITHUB_WORKSPACE/results" \
+            2>&1 | tee "$GITHUB_WORKSPACE/results/benchmark.log"; then
+            echo "ERROR: AndroidWorld benchmark command failed"
+            exit 1
+          fi
+
+          if ! grep -q "Running task" "$GITHUB_WORKSPACE/results/benchmark.log"; then
+            echo "ERROR: No benchmark task execution was observed"
+            exit 1
+          fi
+          if ! grep -Eq "Task (Successful|Failed)" "$GITHUB_WORKSPACE/results/benchmark.log"; then
+            echo "ERROR: No benchmark task result was observed"
+            exit 1
+          fi
+          if grep -q "SKIPPING" "$GITHUB_WORKSPACE/results/benchmark.log"; then
+            echo "ERROR: AndroidWorld skipped the task"
+            exit 1
+          fi
+
+          echo "ANDROIDWORLD SMOKE TEST PASSED"
+          BASH
+          chmod +x "$GITHUB_WORKSPACE/benchmark-smoke.sh"
+
       - name: Run AndroidWorld task
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
@@ -47,35 +99,7 @@ jobs:
           profile: pixel_6
           avd-name: AndroidWorldAvd
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -grpc 8554
-          script: |
-            mkdir -p "$HOME/Android/Sdk/platform-tools"
-            ln -sf "$(command -v adb)" "$HOME/Android/Sdk/platform-tools/adb"
-
-            mkdir -p "$GITHUB_WORKSPACE/results"
-            cd "$GITHUB_WORKSPACE/android_world"
-
-            if python run.py \
-              --suite_family=android_world \
-              --agent_name=random_agent \
-              --tasks=SystemWifiTurnOn \
-              --perform_emulator_setup \
-              --adb_path="$(command -v adb)" \
-              --output_path="$GITHUB_WORKSPACE/results" \
-              > "$GITHUB_WORKSPACE/results/benchmark.log" 2>&1; then
-              cat "$GITHUB_WORKSPACE/results/benchmark.log"
-            else
-              cat "$GITHUB_WORKSPACE/results/benchmark.log"
-              exit 1
-            fi
-
-            grep -q "Running task" "$GITHUB_WORKSPACE/results/benchmark.log"
-            grep -E 'Task (Successful|Failed)' "$GITHUB_WORKSPACE/results/benchmark.log"
-            if grep -q "SKIPPING" "$GITHUB_WORKSPACE/results/benchmark.log"; then
-              echo "AndroidWorld task encountered an exception"
-              exit 1
-            fi
-
-            echo "ANDROIDWORLD SMOKE TEST PASSED"
+          script: bash "$GITHUB_WORKSPACE/benchmark-smoke.sh"
 
       - name: Upload results
         if: always()
